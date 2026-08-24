@@ -17,9 +17,14 @@ Image_generation.m).
                  collide
     output_dir : base output directory; images are written to
                  <output_dir>/label_<label>/sample_<00000+start_idx>.png
+                 (save_format="png") or
+                 <output_dir>/label_<label>/images_<start_idx>_<end_idx>.npy
+                 (save_format="npy")
     num_sweeps : optional override of the annealing sweep count per beta
                  value (default 10000, matching Image_generation.m). Only
                  meant for quick smoke tests of this script.
+    save_format: "png" (default, one file per image) or "npy" (one array
+                 file per call, shape (batch_size, 28, 28) uint8)
 """
 import argparse
 import os
@@ -62,9 +67,11 @@ def _build_bias(hout, index_sticker, NM, label, batch_size):
 
 
 def generate_labeled_batch(label, seed, batch_size, start_idx, output_dir, num_sweeps=10000,
-                            data_dir=None, test_randoms=None, progress=False):
+                            data_dir=None, test_randoms=None, progress=False, save_format="png"):
     if data_dir is None:
         data_dir = REPO_ROOT
+    if save_format not in ("png", "npy"):
+        raise ValueError(f"save_format must be 'png' or 'npy', got {save_format!r}")
 
     groups, Jout, hout, index_visible, index_sticker = _load_data(data_dir)
     NM = Jout.shape[0]
@@ -82,13 +89,23 @@ def generate_labeled_batch(label, seed, batch_size, start_idx, output_dir, num_s
     out_dir = os.path.join(output_dir, f"label_{label}")
     os.makedirs(out_dir, exist_ok=True)
 
+    images = np.empty((batch_size, 28, 28), dtype=np.uint8)
     for b in range(batch_size):
         img = S[index_visible, b].reshape(28, 28, order="F")
         img01 = (img + 1) / 2  # bipolar {-1,+1} -> {0,1}
-        fname = os.path.join(out_dir, f"sample_{start_idx + b:05d}.png")
-        Image.fromarray((img01 * 255).astype(np.uint8), mode="L").save(fname)
+        images[b] = (img01 * 255).astype(np.uint8)
 
-    print(f"[label={label}] wrote {batch_size} images to {out_dir}")
+    if save_format == "npy":
+        end_idx = start_idx + batch_size - 1
+        fname = os.path.join(out_dir, f"images_{start_idx:05d}_{end_idx:05d}.npy")
+        np.save(fname, images)
+        print(f"[label={label}] wrote {batch_size} images to {fname}")
+    else:
+        for b in range(batch_size):
+            fname = os.path.join(out_dir, f"sample_{start_idx + b:05d}.png")
+            Image.fromarray(images[b], mode="L").save(fname)
+        print(f"[label={label}] wrote {batch_size} images to {out_dir}")
+
     return S
 
 
@@ -103,7 +120,11 @@ if __name__ == "__main__":
     parser.add_argument("--data-dir", type=str, default=None)
     parser.add_argument("--progress", action="store_true",
                          help="print progress after each beta value instead of only at the end")
+    parser.add_argument("--save-format", choices=["png", "npy"], default="png",
+                         help="png: one file per image (default). "
+                              "npy: one (batch_size, 28, 28) uint8 array file per call")
     args = parser.parse_args()
 
     generate_labeled_batch(args.label, args.seed, args.batch_size, args.start_idx,
-                            args.output_dir, args.num_sweeps, data_dir=args.data_dir, progress=args.progress)
+                            args.output_dir, args.num_sweeps, data_dir=args.data_dir,
+                            progress=args.progress, save_format=args.save_format)
