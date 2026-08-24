@@ -21,6 +21,7 @@ be fast under JAX:
    the graph's max degree keeps the gather perfectly rectangular
    (jit/vmap-friendly) without paying for the zeros.
 """
+import time
 from functools import partial
 
 import jax
@@ -72,8 +73,8 @@ def _run_schedule_production(S0, nbr_idx, nbr_w, hg, idx_list, beta_per_step, ke
             S = S.at[idx_list[c], :].set(jnp.sign(jnp.tanh(x) - 2 * r + 1))
         return (S, key), None
 
-    (S_final, _), _ = jax.lax.scan(step_fn, (S0, key), beta_per_step)
-    return S_final
+    (S_final, key_final), _ = jax.lax.scan(step_fn, (S0, key), beta_per_step)
+    return S_final, key_final
 
 
 @partial(jax.jit, static_argnames=("required_colors",))
@@ -96,7 +97,7 @@ def _run_schedule_test(S0, nbr_idx, nbr_w, hg, idx_list, beta_per_step, draws_st
     return S_final
 
 
-def pbit_gibbs_sample(J_bipolar, h_bipolar, groups, beta, num_sweeps, seed=0, test_randoms=None):
+def pbit_gibbs_sample(J_bipolar, h_bipolar, groups, beta, num_sweeps, seed=0, test_randoms=None, progress=False):
     """Run the annealed chromatic Gibbs sampler.
 
     J_bipolar : (NM, NM) array-like coupling matrix (sparse structure, dense
@@ -118,6 +119,14 @@ def pbit_gibbs_sample(J_bipolar, h_bipolar, groups, beta, num_sweeps, seed=0, te
                             sweep, color) loop nest (beta outer, sweep
                             middle, color inner -- matching pbit_gibbs_sample.m)
                 When omitted, draws come from the JAX PRNG (production path).
+    progress  : if True (production path only), run one beta value at a time
+                and print progress after each -- the whole schedule is still
+                one compiled program (every chunk has the same shape, so it
+                compiles once and the rest are cache hits), just split into
+                len(beta) checkpoints instead of a single opaque call. Long
+                num_sweeps runs can take minutes to hours, so this trades a
+                little chunking overhead for visibility into how far along
+                the anneal is.
 
     Returns S: (NM, B) numpy array, final bipolar {-1,+1} state.
     """
@@ -131,9 +140,8 @@ def pbit_gibbs_sample(J_bipolar, h_bipolar, groups, beta, num_sweeps, seed=0, te
     hg = [jnp.asarray(h_bipolar[g, :]) for g in groups]
     idx_list = [jnp.asarray(g) for g in groups]
 
-    beta_per_step = jnp.repeat(jnp.asarray(beta, dtype=jnp.float64), num_sweeps)
-
     if test_randoms is not None:
+        beta_per_step = jnp.repeat(jnp.asarray(beta, dtype=jnp.float64), num_sweeps)
         S0 = jnp.asarray(np.asarray(test_randoms["init"], dtype=np.float64))
         draws = test_randoms["draws"]
         draws_stacked = tuple(
@@ -145,8 +153,23 @@ def pbit_gibbs_sample(J_bipolar, h_bipolar, groups, beta, num_sweeps, seed=0, te
     else:
         key = jax.random.PRNGKey(seed)
         key, init_key = jax.random.split(key)
-        S0 = 2 * jax.random.uniform(init_key, (NM, B), dtype=jnp.float64) - 1
-        S_final = _run_schedule_production(S0, nbr_idx, nbr_w, tuple(hg), tuple(idx_list), beta_per_step,
-                                            key, required_colors)
+        S = 2 * jax.random.uniform(init_key, (NM, B), dtype=jnp.float64) - 1
+
+        if progress:
+            t0 = time.time()
+            for i, bkk in enumerate(beta):
+                chunk_beta = jnp.full((num_sweeps,), bkk, dtype=jnp.float64)
+                S, key = _run_schedule_production(S, nbr_idx, nbr_w, tuple(hg), tuple(idx_list),
+                                                    chunk_beta, key, required_colors)
+                done = i + 1
+                elapsed = time.time() - t0
+                eta = elapsed / done * (len(beta) - done)
+                print(f"[pbit_gibbs_sample] beta={bkk:.3f} ({done}/{len(beta)}) "
+                      f"elapsed={elapsed:.1f}s eta={eta:.1f}s", flush=True)
+            S_final = S
+        else:
+            beta_per_step = jnp.repeat(jnp.asarray(beta, dtype=jnp.float64), num_sweeps)
+            S_final, _ = _run_schedule_production(S, nbr_idx, nbr_w, tuple(hg), tuple(idx_list), beta_per_step,
+                                                    key, required_colors)
 
     return np.asarray(S_final)

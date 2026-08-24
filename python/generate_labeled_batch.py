@@ -62,7 +62,7 @@ def _build_bias(hout, index_sticker, NM, label, batch_size):
 
 
 def generate_labeled_batch(label, seed, batch_size, start_idx, output_dir, num_sweeps=10000,
-                            data_dir=None, test_randoms=None):
+                            data_dir=None, test_randoms=None, progress=False):
     if data_dir is None:
         data_dir = REPO_ROOT
 
@@ -75,7 +75,8 @@ def generate_labeled_batch(label, seed, batch_size, start_idx, output_dir, num_s
     print(f"[label={label} seed={seed}] generating {batch_size} images "
           f"(start_idx={start_idx}, num_sweeps={num_sweeps})...")
     t0 = time.time()
-    S = pbit_gibbs_sample(J_bipolar, H, groups, BETA, num_sweeps, seed=seed, test_randoms=test_randoms)
+    S = pbit_gibbs_sample(J_bipolar, H, groups, BETA, num_sweeps, seed=seed,
+                           test_randoms=test_randoms, progress=progress)
     print(f"elapsed: {time.time() - t0:.2f}s")
 
     out_dir = os.path.join(output_dir, f"label_{label}")
@@ -100,7 +101,9 @@ if __name__ == "__main__":
     parser.add_argument("output_dir", type=str)
     parser.add_argument("num_sweeps", type=int, nargs="?", default=10000)
     parser.add_argument("--data-dir", type=str, default=None)
+    parser.add_argument("--progress", action="store_true",
+                         help="print progress after each beta value instead of only at the end")
     args = parser.parse_args()
 
     generate_labeled_batch(args.label, args.seed, args.batch_size, args.start_idx,
-                            args.output_dir, args.num_sweeps, data_dir=args.data_dir)
+                            args.output_dir, args.num_sweeps, data_dir=args.data_dir, progress=args.progress)
